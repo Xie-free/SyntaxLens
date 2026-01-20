@@ -1,166 +1,251 @@
 import sys
+import os
 import time
-import keyboard
+import ctypes
+import queue
+import threading
 import pyperclip
+
+# 1. 强制软件渲染
+os.environ["QT_OPENGL"] = "software"
+
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QTimer, QDir, Qt
+# ✅ 引入网络模块，用于进程间通信
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PyQt6.QtGui import QIcon
 
-# 导入模块
-from core.config import ConfigManager
+import keyboard
+
 from core.hardware import hard_click, hard_press, hard_release, DIK_HOME, DIK_END, DIK_LSHIFT, DIK_LCONTROL, DIK_C
-from core.ai_worker import AIWorker
+from core.ai_worker import AIRequestWorker
+
+from ui.main_window import MainWindow
 from ui.popup import PopupResult
-from ui.main_window import MainWindow  # 导入新写的主界面
+
+HOTKEY_QUEUE = queue.Queue()
+# 唯一的通信管道名称
+IPC_SERVER_NAME = "SyntaxLens_IPC_Server_v002"
 
 
-class Bridge(QObject):
-    request_start = pyqtSignal(str)  # 启动任务信号
-    log_message = pyqtSignal(str)  # 日志信号
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 
-class Controller:
-    def __init__(self, config_manager, main_window):
-        self.cfg = config_manager
-        self.ui = main_window  # 持有 UI 对象，用于获取状态
+def hotkey_daemon(grammar_key, translate_key):
+    def on_grammar():
+        HOTKEY_QUEUE.put("grammar")
 
-        self.popup = PopupResult()
-        self.worker = None
-        self.bridge = Bridge()
+    def on_translate():
+        HOTKEY_QUEUE.put("translate")
 
-        # 连接信号
-        self.bridge.request_start.connect(self.start_pipeline)
-        self.bridge.log_message.connect(self.ui.append_log)  # 把日志打到 UI 上
-
-        # 监听 UI 的配置保存信号
-        self.ui.config_updated.connect(self.reload_hotkeys)
-
-        self.is_processing = False
-        self.current_hotkeys = []  # 记录当前注册的快捷键，用于清理
-
-        # 初始注册
-        self.reload_hotkeys(self.cfg.config)
-
-    def reload_hotkeys(self, new_config):
-        """热重载快捷键"""
-        # 1. 清除旧的
+    try:
         try:
             keyboard.unhook_all_hotkeys()
-            self.bridge.log_message.emit("♻️ 正在刷新快捷键绑定...")
+        except:
+            pass
+        keyboard.add_hotkey(grammar_key, on_grammar)
+        keyboard.add_hotkey(translate_key, on_translate)
+        keyboard.wait()
+    except Exception as e:
+        print(f"Hotkey Error: {e}")
+
+
+class SyntaxLensApp(MainWindow):
+    def __init__(self, config_manager):
+        super().__init__(config_manager)
+        self.popup = PopupResult()
+        self.ai_worker = None
+        self.is_processing = False
+
+        self.poller = QTimer()
+        self.poller.timeout.connect(self.check_queue)
+        self.poller.start(100)
+
+        self.append_log("✅ 系统就绪")
+
+        threading.Thread(target=hotkey_daemon,
+                         args=(self.cfg.get("hotkey_grammar"), self.cfg.get("hotkey_translate")),
+                         daemon=True).start()
+
+        threading.Thread(target=self.preload_heavy_libs, daemon=True).start()
+
+        # ✅ 启动 IPC 服务器 (监听唤醒指令)
+        self.init_ipc_server()
+
+    # --- 进程通信服务端 ---
+    def init_ipc_server(self):
+        # 如果残留了旧的 server 文件，先删除
+        QLocalServer.removeServer(IPC_SERVER_NAME)
+
+        self.ipc_server = QLocalServer()
+        self.ipc_server.newConnection.connect(self.handle_new_connection)
+        if self.ipc_server.listen(IPC_SERVER_NAME):
+            self.append_log("✅ 唤醒服务已启动")
+        else:
+            self.append_log("❌ 唤醒服务启动失败")
+
+    def handle_new_connection(self):
+        # 收到新连接（说明有人试图再次打开软件）
+        socket = self.ipc_server.nextPendingConnection()
+        socket.readyRead.connect(lambda: self.read_socket_data(socket))
+
+    def read_socket_data(self, socket):
+        data = socket.readAll().data().decode()
+        if data == "SHOW":
+            # 收到 SHOW 指令，强制把自己置顶显示
+            self.force_show_window()
+
+    def force_show_window(self):
+        self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    # -----------------------
+
+    def preload_heavy_libs(self):
+        try:
+            import markdown2
+            from openai import OpenAI
         except:
             pass
 
-        # 2. 注册新的
-        hk_gram = new_config.get("hotkey_grammar")
-        hk_trans = new_config.get("hotkey_translate")
-
+    def check_queue(self):
         try:
-            keyboard.add_hotkey(hk_gram, lambda: self.on_hotkey("grammar"))
-            keyboard.add_hotkey(hk_trans, lambda: self.on_hotkey("translate"))
-            self.bridge.log_message.emit(f"✅ 快捷键已绑定:\n   语法分析: [{hk_gram}]\n   中英翻译: [{hk_trans}]")
-        except Exception as e:
-            self.bridge.log_message.emit(f"❌ 快捷键注册失败: {e}")
+            while not HOTKEY_QUEUE.empty():
+                task_type = HOTKEY_QUEUE.get_nowait()
+                self.start_task_flow(task_type)
+        except:
+            pass
 
-    def on_hotkey(self, task_type):
-        """快捷键入口"""
-        # 如果 UI 上点击了暂停，则不处理
-        if not self.ui.is_running:
+    def start_task_flow(self, task_type):
+        if self.is_recording_mode():
+            self.append_log(f"⚠️ 正在录制快捷键，忽略触发: {task_type}")
             return
 
-        if not self.is_processing:
-            self.bridge.request_start.emit(task_type)
-
-    def start_pipeline(self, task_type):
+        if self.is_processing: return
         self.is_processing = True
-        mode_name = "语法分析" if task_type == "grammar" else "中英翻译"
-        self.bridge.log_message.emit(f">>> ⚡ 触发任务: {mode_name}")
+        mode = "语法分析" if task_type == "grammar" else "翻译"
+        self.append_log(f">>> 触发: {mode}")
+        self.perform_copy(task_type)
 
+    def perform_copy(self, task_type):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            # 1. 等待按键释放
-            self.bridge.log_message.emit("⏳ 等待按键释放...")
-            while keyboard.is_pressed('ctrl') or keyboard.is_pressed('shift') or keyboard.is_pressed('alt'):
-                time.sleep(0.1)
-            time.sleep(0.3)
-
-            # 2. 混合取词
             pyperclip.copy("")
-
-            # 尝试直接复制
             hard_press(DIK_LCONTROL)
-            time.sleep(0.1)
+            time.sleep(0.01)
             hard_click(DIK_C)
-            time.sleep(0.1)
+            time.sleep(0.01)
             hard_release(DIK_LCONTROL)
+            time.sleep(0.02)
+            text = pyperclip.paste()
 
-            time.sleep(0.1)
-            manual_text = pyperclip.paste()
-            target_text = ""
-
-            if manual_text.strip():
-                self.bridge.log_message.emit(f"✅ 手动选中: {manual_text[:10]}...")
-                target_text = manual_text
-            else:
-                self.bridge.log_message.emit("⚠️ 未选中，执行自动全选...")
+            if not text.strip():
+                self.append_log("⚠️ 未选中，尝试全选...")
                 hard_click(DIK_HOME)
-                time.sleep(0.1)
+                time.sleep(0.01)
                 hard_press(DIK_LSHIFT)
-                time.sleep(0.2)
+                time.sleep(0.01)
                 hard_click(DIK_END)
-                time.sleep(0.2)
+                time.sleep(0.01)
                 hard_release(DIK_LSHIFT)
-                time.sleep(0.1)
-
+                time.sleep(0.01)
                 hard_press(DIK_LCONTROL)
-                time.sleep(0.2)
+                time.sleep(0.01)
                 hard_click(DIK_C)
-                time.sleep(0.2)
+                time.sleep(0.01)
                 hard_release(DIK_LCONTROL)
+                time.sleep(0.2)
+                text = pyperclip.paste()
 
-                for _ in range(5):
-                    time.sleep(0.1)
-                    target_text = pyperclip.paste()
-                    if target_text.strip(): break
-
-            if target_text.strip():
-                self.bridge.log_message.emit(f"✅ 获取文本: {target_text[:15]}...")
-                self.popup.show_loading(mode_name)
-
-                self.worker = AIWorker(target_text, self.cfg, task_type)
-                self.worker.finished_signal.connect(self.handle_ai_result)
-                self.worker.start()
+            if text.strip():
+                self.append_log(f"✅ 获取文本: {text[:10]}...")
+                self.popup.show_loading(f"正在分析...")
+                self.ai_worker = AIRequestWorker(text, self.cfg, task_type)
+                self.ai_worker.finished_signal.connect(self.on_ai_finished)
+                self.ai_worker.start()
             else:
-                self.bridge.log_message.emit("❌ 获取文本失败")
-                self.popup.show_message("⚠️ <b>获取失败</b>")
+                self.append_log("❌ 未获取到文本")
+                self.popup.show_message("⚠️ 未选中内容")
+                self.reset_state()
 
         except Exception as e:
-            self.bridge.log_message.emit(f"❌ 错误: {e}")
-        finally:
-            hard_release(DIK_LSHIFT)
-            hard_release(DIK_LCONTROL)
-            self.is_processing = False
+            self.append_log(f"❌ 错误: {e}")
+            self.reset_state()
 
-    def handle_ai_result(self, result):
-        """处理 AI 返回结果"""
-        self.popup.show_message(result)
-        self.bridge.log_message.emit("✅ AI 分析完成")
+    def on_ai_finished(self, html):
+        self.popup.update_stream_content(html, True)
+        self.append_log("✅ 分析完成")
+        self.reset_state()
+
+    def reset_state(self):
+        self.is_processing = False
+        QApplication.restoreOverrideCursor()
 
 
 def main():
-    app = QApplication(sys.argv)
+    try:
+        myappid = 'mycompany.syntaxlens.pro.v002'
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except:
+        pass
 
-    # 1. 加载配置
-    cfg_mgr = ConfigManager()
+    try:
+        app = QApplication(sys.argv)
+        app.setQuitOnLastWindowClosed(False)
 
-    # 2. 创建主窗口
-    main_win = MainWindow(cfg_mgr)
+        icon_path = resource_path("app.ico")
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
 
-    # 3. 创建控制器 (把窗口传进去)
-    controller = Controller(cfg_mgr, main_win)
+        # === 🚀 核心修改：检测多开并唤醒旧窗口 ===
+        # 尝试连接已存在的服务器
+        socket = QLocalSocket()
+        socket.connectToServer(IPC_SERVER_NAME)
 
-    # 4. 显示主窗口
-    main_win.show()
+        if socket.waitForConnected(500):
+            # 连接成功！说明已经有一个实例在跑了
+            # 发送唤醒指令
+            socket.write(b"SHOW")
+            socket.flush()
+            socket.waitForBytesWritten(1000)
+            # 退出当前这个多余的进程
+            return
 
-    print("🚀 SyntaxLens UI 已启动")
-    sys.exit(app.exec())
+            # === 如果没有连接成功，说明我是第一个，正常启动 ===
+
+        from core.config import ConfigManager
+        cfg = ConfigManager()
+
+        win = SyntaxLensApp(cfg)
+
+        # 🚀 启动显示逻辑判断
+        # 1. 检查命令行参数是否有 --silent (由注册表开机自启传入)
+        is_silent_start = "--silent" in sys.argv
+
+        # 2. 检查是否有 API Key
+        has_api_key = bool(cfg.get("api_key"))
+
+        if not has_api_key:
+            # 没 Key 必须显示
+            win.force_show_window()
+        elif is_silent_start:
+            # 是开机自启，且有 Key -> 静默启动 (仅托盘)
+            # 可以在这里加个气泡提示
+            win.tray_icon.showMessage("SyntaxLens", "已在后台静默运行", QSystemTrayIcon.MessageIcon.Information, 2000)
+        else:
+            # 普通双击启动 -> 显示窗口
+            win.force_show_window()
+
+        sys.exit(app.exec())
+    except Exception as e:
+        ctypes.windll.user32.MessageBoxW(0, str(e), "Fatal Error", 0x10)
 
 
 if __name__ == "__main__":
