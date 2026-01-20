@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config_manager):
         super().__init__()
         self.cfg = config_manager
-        self.setWindowTitle("SyntaxLens v0.0.2 - 智能屏幕助手")
+        self.setWindowTitle("SyntaxLens v0.2.0 - 智能屏幕助手")
         self.resize(500, 480)
 
         self.icon_path = resource_path("app.ico")
