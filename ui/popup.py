@@ -1,22 +1,33 @@
 from PyQt6.QtWidgets import (QWidget, QLabel, QVBoxLayout, QHBoxLayout,
                              QGraphicsDropShadowEffect, QFrame, QPushButton,
-                             QApplication, QScrollArea, QSizePolicy)
-from PyQt6.QtCore import Qt
+                             QApplication, QScrollArea, QSizePolicy, QSizeGrip)
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor
 
 
 class PopupResult(QWidget):
+    closed_signal = pyqtSignal()
+
     def __init__(self):
         super().__init__()
-        # 无边框 + 置顶 + 工具窗口
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+        # 设置无边框、置顶、工具窗口，同时关键：不接受焦点，不激活窗口（防偷光标焦点）
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.WindowStaysOnTopHint | 
+            Qt.WindowType.Tool |
+            Qt.WindowType.WindowDoesNotAcceptFocus
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+        # 允许调整大小
+        self.setMinimumWidth(300)  # 最小宽度
+        self.setMinimumHeight(150)  # 最小高度
 
         self.main_layout = QVBoxLayout()
         self.main_layout.setContentsMargins(10, 10, 10, 10)
         self.setLayout(self.main_layout)
 
-        # --- 样式核心 ---
         self.container = QFrame()
         self.container.setObjectName("container")
         self.container.setStyleSheet("""
@@ -66,11 +77,14 @@ class PopupResult(QWidget):
             QScrollBar::handle:vertical:hover {
                 background: #666;
             }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+
+            /* 调整右下角手柄样式 */
+            QSizeGrip {
+                background: transparent;
+                width: 16px;
+                height: 16px;
             }
         """)
 
@@ -83,23 +97,21 @@ class PopupResult(QWidget):
 
         self.main_layout.addWidget(self.container)
 
+        # 容器布局
         container_layout = QVBoxLayout(self.container)
-        container_layout.setContentsMargins(12, 12, 5, 12)
+        container_layout.setContentsMargins(12, 12, 5, 5)  # 底部留空给 SizeGrip
         container_layout.setSpacing(5)
 
         # 1. 标题栏
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 5, 0)
-
         self.title = QLabel("🤖 分析结果")
         self.title.setObjectName("title_lbl")
-
         btn_close = QPushButton("×")
         btn_close.setObjectName("close_btn")
         btn_close.setFixedSize(24, 24)
         btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_close.clicked.connect(self.hide)
-
+        btn_close.clicked.connect(self.close_popup)
         header.addWidget(self.title)
         header.addStretch()
         header.addWidget(btn_close)
@@ -110,6 +122,9 @@ class PopupResult(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet("background: transparent;")
 
+        # ❌ 关键：彻底禁用水平滚动条，强制换行
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         scroll_content = QWidget()
         scroll_content.setStyleSheet("background: transparent;")
         scroll_layout = QVBoxLayout(scroll_content)
@@ -117,53 +132,65 @@ class PopupResult(QWidget):
 
         self.label = QLabel("Waiting...")
         self.label.setObjectName("content_lbl")
-        self.label.setWordWrap(True)
+        self.label.setWordWrap(True)  # 允许文字换行
         self.label.setTextFormat(Qt.TextFormat.RichText)
         self.label.setOpenExternalLinks(True)
         self.label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        # 允许垂直方向无限伸展
         self.label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
 
         scroll_layout.addWidget(self.label)
         self.scroll_area.setWidget(scroll_content)
-
         container_layout.addWidget(self.scroll_area)
+
+        # 3. 底部右下角拖拽手柄
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addStretch()  # 把手柄挤到最右边
+        self.size_grip = QSizeGrip(self.container)  # 绑定到 container 上
+        self.size_grip.setFixedSize(16, 16)
+        bottom_layout.addWidget(self.size_grip)
+        container_layout.addLayout(bottom_layout)
 
         self.m_Position = None
         self.is_pressed = False
+
+    def close_popup(self):
+        self.hide()
+        self.closed_signal.emit()
 
     def show_loading(self, title="AI 思考中"):
         self.title.setText(f"🤖 {title}")
         self.label.setText("""
             <div style='text-align:center; margin-top:20px;'>
-                <span style='font-size:16px; color:#569cd6; font-weight:bold;'>🚀 正在分析语义...</span><br>
+                <span style='font-size:16px; color:#569cd6; font-weight:bold;'>🚀 正在分析...</span><br>
                 <span style='font-size:12px; color:#666;'>Thinking...</span>
             </div>
         """)
-        # 重置回顶部 (关键)
         self.scroll_area.verticalScrollBar().setValue(0)
-        self.resize(340, 180)
+
+        # 默认稍微宽一点 (340 -> 380)
+        self.resize(380, 180)
         self.move_to_mouse()
+        # 使用 show 结合 WA_ShowWithoutActivating 和 WindowDoesNotAcceptFocus 不会抢焦点
         self.show()
-        self.raise_()
+        # 注意：不要调用 self.raise_() 或 self.activateWindow() ，这会强制抢夺焦点
 
     def update_stream_content(self, html_content, is_finished=False):
         self.label.setText(html_content)
 
-        # --- 窗口高度自动伸展逻辑 ---
-        # 目标：让窗口变高，显示更多内容
+        # 自动长高
         doc_height = self.label.sizeHint().height()
-        target_height = min(max(doc_height + 60, 150), 600)  # 最大高度 600
+        target_height = min(max(doc_height + 80, 180), 600)
+
+        # 只调整高度，不改变当前宽度（因为用户可能手动拉宽了）
+        current_width = self.width()
 
         if abs(self.height() - target_height) > 30:
-            self.resize(self.width(), target_height)
-
-        # --- ❌ 删除了“自动滚动到底部”的代码 ---
-        # 现在的行为是：窗口变高，内容增加，但滚动条位置不动。
-        # 如果用户在顶部，看到的就是顶部；如果用户自己滑到底部，那就是底部。
+            self.resize(current_width, target_height)
 
     def show_message(self, text):
         self.label.setText(f"<div style='color:#ce9178'>{text}</div>")
-        self.resize(300, 120)
+        self.resize(320, 120)
         self.move_to_mouse()
         self.show()
 

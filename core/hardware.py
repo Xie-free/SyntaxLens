@@ -56,8 +56,8 @@ def send_scan_code(hexKeyCode, is_press):
         flags |= 0x0002  # KEYEVENTF_KEYUP
 
     # 处理扩展键 (Home, End, Arrows等)
-    if hexKeyCode in [0x47, 0x4F, 0x48, 0x50, 0x4B, 0x4D, 0x1D]:
-        flags |= 0x0001  # KEYEVENTF_EXTENDEDKEY
+    if hexKeyCode in [0x47, 0x4F, 0x48, 0x50, 0x4B, 0x4D, 0x1D, 0x52, 0x53]:
+        flags |= 0x0001
 
     ii_.ki = KeyBdInput(0, hexKeyCode, flags, 0, ctypes.pointer(extra))
     x = Input(ctypes.c_ulong(1), ii_)
@@ -71,6 +71,8 @@ DIK_HOME = 0x47
 DIK_END = 0x4F
 DIK_C = 0x2E
 DIK_RIGHT = 0x4D
+DIK_INSERT = 0x52
+DIK_DELETE = 0x53
 
 
 # --- 便捷操作函数 ---

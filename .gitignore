@@ -211,11 +211,22 @@ __marimo__/
 .vscode/
 
 # Build
+# Build
 dist/
 build/
-nuitka_dist/
 *.spec
-*.xml
 
+# Nuitka specific
+*.build/
+*.dist/
+.nuitka/
+nuitka-crash-report.xml
+nuitka_dist/
+main.build/
+main.dist/
+*.exe
+
+# Inno Setup
+Inno Setup/
 # Config
 config.json
