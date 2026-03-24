@@ -50,8 +50,8 @@ def hotkey_daemon(grammar_key, translate_key):
     try:
         try:
             keyboard.unhook_all_hotkeys()
-        except:
-            pass
+        except Exception as e:
+            print(f"Hotkey cleanup warning: {e}")
         keyboard.add_hotkey(grammar_key, on_grammar)
         keyboard.add_hotkey(translate_key, on_translate)
         keyboard.wait()
@@ -348,8 +348,8 @@ class SyntaxLensApp(MainWindow):
     def preload_heavy_libs(self):
         try:
             import markdown2; from openai import OpenAI
-        except:
-            pass
+        except Exception as e:
+            self.append_log(f"预加载依赖失败: {e}")
 
     def start_task_flow(self, task_type):
         if self.is_recording_mode(): return
@@ -391,7 +391,7 @@ def main():
     try:
         myappid = 'mycompany.syntaxlens.pro.v002'
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-    except:
+    except Exception:
         pass
 
     try:
