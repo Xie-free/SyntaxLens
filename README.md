@@ -47,11 +47,11 @@
 ## 📸 截图展示 | Screenshots
 
 ### 1. 沉浸式 AI 分析 (Markdown 渲染)
-> *注：新版已支持深色模式与代码高亮，请替换为新截图*
+> 
 ![Popup Example](https://img.illusionlie.com/file/1768483282275.png)
 
 ### 2. 智能化设置面板 (支持按键录制)
-> *注：新版支持快捷键录制框，请替换为新截图*
+> 
 ![Settings Example](https://img.illusionlie.com/file/1768483413001.png)
 
 ## 🚀 快速开始 | Quick Start
