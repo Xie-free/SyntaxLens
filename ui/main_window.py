@@ -1,5 +1,6 @@
 import sys
 import os
+import subprocess
 import winreg
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QGroupBox,
@@ -273,9 +274,15 @@ shortcut.Save
                 vbs_path = os.path.join(os.environ["TEMP"], "create_shortcut.vbs")
                 with open(vbs_path, "w", encoding="gbk") as f:
                     f.write(vbs_code)
-                os.system(f'cscript //nologo "{vbs_path}"')
-                try: os.remove(vbs_path)
-                except: pass
+                subprocess.run(
+                    ["cscript.exe", "//nologo", vbs_path],
+                    check=False,
+                    capture_output=True
+                )
+                try:
+                    os.remove(vbs_path)
+                except OSError:
+                    pass
             else:
                 # 删除快捷方式
                 if os.path.exists(lnk_path):
