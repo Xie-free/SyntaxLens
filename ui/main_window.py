@@ -279,8 +279,10 @@ shortcut.Save
                     check=False,
                     capture_output=True
                 )
-                try: os.remove(vbs_path)
-                except: pass
+                try:
+                    os.remove(vbs_path)
+                except OSError:
+                    pass
             else:
                 # 删除快捷方式
                 if os.path.exists(lnk_path):

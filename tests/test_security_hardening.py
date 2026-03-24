@@ -13,7 +13,7 @@ class TestSecurityHardening(unittest.TestCase):
 
     def test_bare_except_reduced_in_main(self):
         content = (REPO_ROOT / "main.py").read_text(encoding="utf-8")
-        self.assertNotIn("except:\n", content)
+        self.assertNotIn("except:", content)
         self.assertIn("except Exception as e:", content)
 
 
